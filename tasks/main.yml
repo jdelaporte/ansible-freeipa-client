@@ -12,49 +12,62 @@
 - name: Import variables
   tags:
     - import
-    - freeipaclient
   include_vars: "{{ ansible_distribution }}.yml"
 
+#I expect this to break if network manager
+#or other script
+#is handling the /etc/resolv.conf file.
 - name: Set DNS server
   tags:
     - dns
-    - freeipaclient
   become: true
   when: freeipaclient_dns_server is defined
   lineinfile:
-    state=present
-    line="nameserver {{ freeipaclient_dns_server }}"
-    dest=/etc/resolv.conf
-
-- name: Update cache
-  tags:
-    - packagemanagement
-    - freeipaclient
-  become: true
-  when: ansible_pkg_mgr  == 'apt'
-  action: "{{ ansible_pkg_mgr }} update_cache=yes"
+    state: present
+    line: "nameserver {{ freeipaclient_dns_server }}"
+    dest: /etc/resolv.conf
+    backup: yes
 
 - name: Install required packages
+  package: 
+    state: present
+    name: "{{ item }}"
+    update_cache: yes
   tags:
     - packagemanagement
-    - freeipaclient
   become: true
-  with_items: packages
-  action: "{{ ansible_pkg_mgr }} state=installed name={{ item }}"
+  with_items: "{{ packages }}"
 
 - name: Check if host is enrolled
   tags:
     - enroll
-    - freeipaclient
   register: freeipaclient_ipaconf
   always_run: true
   stat:
     path=/etc/ipa/default.conf
 
+#ntpd config will fail if chronyd is in use
+- name: disable chronyd
+  service:
+    name: chronyd
+    state: stopped
+    enabled: no
+
+- name: ensure /var/log/sssd directory exists
+  file: 
+    path: /var/log/sssd
+    mode: 0755
+    group: root
+    owner: root
+    state: directory
+ 
+- name: uninstall ipa client
+  command: "ipa-client-install --uninstall -U"
+  ignore_errors: yes
+
 - name: Enroll host in domain
   tags:
     - enroll
-    - freeipaclient
   become: true
   when: not freeipaclient_ipaconf.stat.exists
   register: freeipaclient_enrollment
@@ -65,16 +78,10 @@
           --principal={{ freeipaclient_enroll_user }}
           --password={{ freeipaclient_enroll_pass }}
           --ssh-trust-dns
-          --mkhomedir
-          --enable-dns-updates
           --unattended
           {{ '--all-ip-addresses' if freeipaclient_all_ip_addresses else ''}}
           {{ '--no-ntp' if not freeipaclient_enable_ntp else ''}}
-          {{ '--force-join' if freeipaclient_force_join else ''}}"
+          {{ '--force-join --force' if freeipaclient_force_join else ''}}"
 
-- name: Include Ubuntu specific tasks
-  tags:
-    - ubuntu
-    - freeipaclient
-  when: ansible_distribution_release == 'trusty'
-  include: ubuntu.yml
+- name: Include distribution specific tasks
+  include: "{{ansible_os_family|lower}}.yml"
